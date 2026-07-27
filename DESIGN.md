@@ -1,4 +1,4 @@
-# Idempotency-Key Middleware for HTTP Apis
+# Idempotency-Key Middleware for HTTP APIs
 
 ## Decisions
 
