@@ -75,6 +75,10 @@ func NewMiddleware(cfg Config) func (http.Handler) http.Handler {
 }
 
 func replay(r *Response, w http.ResponseWriter) {
+	if r == nil {
+        http.Error(w, "internal error", http.StatusInternalServerError)
+        return
+    }
 	for k, v := range r.Headers {
 		for _, value := range v {
 			w.Header().Add(k, value)

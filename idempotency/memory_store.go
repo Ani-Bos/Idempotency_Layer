@@ -11,7 +11,7 @@ type MemoryEntry struct {
 	key            string
 	fingerprint    string
 	response       *Response
-	done chan *Response
+	waiters        []chan *Response
 	expirationTime time.Time
 	listElements *list.Element
 }
@@ -43,7 +43,7 @@ type MemoryStore struct {
        new_entry := &MemoryEntry{
 		key: key,
 		fingerprint: fingerprint,
-		done: make(chan *Response, 1),
+		waiters: make([]chan *Response, 0),
 		expirationTime: time.Now().Add(ttl),
 	   }
 		s.entries[key] = new_entry
@@ -57,15 +57,17 @@ type MemoryStore struct {
 	if time.Now().After(value.expirationTime) {
 		value.fingerprint = fingerprint
 		value.response = nil
-		value.done = make(chan *Response, 1)
+		value.waiters = make([]chan *Response, 0)
 		value.expirationTime = time.Now().Add(ttl)
 		s.lruList.MoveToFront(value.listElements)
 		return StatusMiss, nil, nil, nil
 	}
 
-	if value.response != nil {
-		return StatusInProgress, nil,value.done, nil
-	}
+	if value.response == nil {
+    ch := make(chan *Response, 1)
+    value.waiters = append(value.waiters, ch)
+    return StatusInProgress, nil, ch, nil
+}
 
 	s.lruList.MoveToFront(value.listElements)
 	return StatusHit, value.response, nil, nil
@@ -73,29 +75,34 @@ type MemoryStore struct {
 
 
 func (s *MemoryStore) Complete(ctx context.Context, key string, fingerprint string, resp *Response, ttl time.Duration) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	value, exists := s.entries[key]
-	if !exists {
-		return nil
-	}
-	if value.fingerprint != fingerprint {
-		return nil
-	}
-	if resp == nil {
-		delete(s.entries,key)
-		s.lruList.Remove(value.listElements)
-		return nil
-	}
-	value.response = resp
-	value.expirationTime = time.Now().Add(ttl)
-	s.lruList.MoveToFront(value.listElements)
-	select {
-	case value.done <- resp:
-	default:
-	}
-	return nil
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    value, exists := s.entries[key]
+    if !exists || value.fingerprint != fingerprint {
+        return nil
+    }
+    if resp == nil {
+        for _, ch := range value.waiters {
+            select {
+            case ch <- nil:
+            default:
+            }
+        }
+        delete(s.entries, key)
+        s.lruList.Remove(value.listElements)
+        return nil
+    }
+    value.response = resp
+    value.expirationTime = time.Now().Add(ttl)
+    s.lruList.MoveToFront(value.listElements)
+    for _, ch := range value.waiters {
+        select {
+        case ch <- resp:
+        default:
+        }
+    }
+    value.waiters = nil
+    return nil
 }
 
 func (s *MemoryStore) evictExpiredEntries() {
