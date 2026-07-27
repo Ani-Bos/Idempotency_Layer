@@ -49,6 +49,15 @@ type MemoryStore struct {
 		s.entries[key] = new_entry
 		s.lruList.PushFront(new_entry)
 		new_entry.listElements = s.lruList.Front()
+		for s.lruList.Len() > s.maxSize {
+        back := s.lruList.Back()
+        if back == nil {
+            break
+        }
+        e := back.Value.(*MemoryEntry)
+        delete(s.entries, e.key)
+        s.lruList.Remove(back)
+    }
 		return StatusMiss, nil, nil, nil
 	}
 	if value.fingerprint != fingerprint {
@@ -120,14 +129,5 @@ func (s *MemoryStore) evictExpiredEntries() {
 		} else {
 			break
 		}
-	}
-	for s.lruList.Len() > s.maxSize {
-		element := s.lruList.Back()
-		if element == nil {
-			break
-		}
-		entry := element.Value.(*MemoryEntry)
-		delete(s.entries, entry.key)
-		s.lruList.Remove(element)
 	}
 }
