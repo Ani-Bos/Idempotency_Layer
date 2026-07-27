@@ -9,6 +9,7 @@ type ResponseRecorder struct {
 	http.ResponseWriter
 	StatusCode int
 	Body    *bytes.Buffer
+	wroteHeader bool
 }
 
 func NewResponseRecorder(w http.ResponseWriter) *ResponseRecorder {
@@ -20,11 +21,18 @@ func NewResponseRecorder(w http.ResponseWriter) *ResponseRecorder {
 }
 
 func (r *ResponseRecorder) WriteHeader(statusCode int) {
+	if r.wroteHeader{
+		return
+	}
+	r.wroteHeader = true
 	r.StatusCode = statusCode
 	r.ResponseWriter.WriteHeader(statusCode)
 }
 
 func (r *ResponseRecorder) Write(b []byte) (int, error) {
+	if !r.wroteHeader {
+		r.WriteHeader(http.StatusOK)
+	}
 	r.Body.Write(b)
 	return r.ResponseWriter.Write(b)
 }

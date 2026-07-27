@@ -2,9 +2,9 @@ package idempotency
 
 import (
 	"context"
-	"time"
+	"errors"
 	"net/http"
-
+	"time"
 )
 type Response struct{
 	StatusCode int
@@ -12,9 +12,20 @@ type Response struct{
 	Headers	http.Header
 }
 
+type StartStatus int
+
+const (
+	StatusMiss StartStatus = iota
+	StatusInProgress
+	StatusHit
+)
+var ErrFingerPrintMismatch = errors.New("idempotency key missmatch after hashing request")
 type Store interface {
-	Set(ctx context.Context, key string, response *Response , ttl time.Duration) error
-	Get(ctx context.Context, key string) (*Response, bool,error)
-	Lock(ctx context.Context, key string , ttl time.Duration) (bool, error)
-	Unlock(ctx context.Context, key string) error
+    Start(ctx context.Context,key string, fingerprint string, ttl time.Duration)(
+		status StartStatus,
+		cached_response *Response,
+		waitCh <-chan *Response,
+		err error,
+	)
+	Complete(ctx context.Context,key string, fingerprint string, resp *Response, ttl time.Duration) error	
 }

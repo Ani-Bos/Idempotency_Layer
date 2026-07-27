@@ -24,44 +24,62 @@ func NewMiddleware(cfg Config) func (http.Handler) http.Handler {
 			 next.ServeHTTP(w,r)
 			 return
 		  }
+		  fp:=fingerprintRequest(r)
 		  ctx := r.Context()
 
-		  cached_response, flag, err := cfg.Store.Get(ctx,key)
-		  if err == nil && flag {
-			for k,v := range cached_response.Headers {
-				for _, vv := range v {
-					w.Header().Add(k,vv)
+	      status, cached, waitCh, err := cfg.Store.Start(ctx, key, fp, cfg.TTL)
+			if err != nil {
+				if err == ErrFingerPrintMismatch {
+					http.Error(w, "idempotency key mismatch occurs", http.StatusConflict)
+					return
 				}
-		    }
-			w.WriteHeader(cached_response.StatusCode)
-			w.Write(cached_response.Body)
-			return
-		}
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
 
-		locked,err := cfg.Store.Lock(ctx,key,cfg.TTL)
-		if err!=nil{
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			return
-		}
-		if !locked {
-			http.Error(w, "Request is already in progress", http.StatusConflict)
-			return
-		}
+			if status == StatusHit {
+				replay(cached, w)
+				return
+			} else if status == StatusInProgress {
+				resp := <-waitCh
+				replay(resp, w)
+				return
+			}
 
-		recorder := NewResponseRecorder(w)
-		next.ServeHTTP(recorder,r)
+			rec := NewResponseRecorder(w)
+			var result *Response
+			shouldCache := false
+			defer func() {
+				if recov := recover(); recov != nil {
+					cfg.Store.Complete(ctx, key, fp, nil, cfg.TTL)
+					panic(recov)
+				}
+				if shouldCache {
+					cfg.Store.Complete(ctx, key, fp, result, cfg.TTL)
+				} else {
+					cfg.Store.Complete(ctx, key, fp, nil, cfg.TTL)
+				}
+			}()
 
-		if recorder.StatusCode >=500 {
-			cfg.Store.Unlock(ctx,key)
-			return
-		}
-        
-		response := &Response{
-			StatusCode: recorder.StatusCode,
-			Body: recorder.Body.Bytes(),
-			Headers: recorder.Header(),
-		}
-		cfg.Store.Set(ctx,key,response,cfg.TTL)
+			next.ServeHTTP(rec, r)
+			if rec.StatusCode < 500 {
+				shouldCache = true
+				result = &Response{
+					StatusCode: rec.StatusCode,
+					Body:       rec.Body.Bytes(),
+					Headers:    rec.Header().Clone(),
+				}
+			}
 		})
 	}
+}
+
+func replay(r *Response, w http.ResponseWriter) {
+	for k, v := range r.Headers {
+		for _, value := range v {
+			w.Header().Add(k, value)
+		}
+	}
+	w.WriteHeader(r.StatusCode)
+	w.Write(r.Body)
 }
